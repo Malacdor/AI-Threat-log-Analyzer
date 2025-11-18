@@ -1,1049 +1,1015 @@
+# AI Threat Log Analyzer with Network Traffic Support
+# A Flask-based web application for analyzing system logs and network traffic using ML and AI
+
+import os
+import re
+import json
+from datetime import datetime
+from flask import Flask, render_template_string, request, jsonify
+from werkzeug.utils import secure_filename
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import LabelEncoder
+import requests
+
+app = Flask(__name__)
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
+app.config['ALLOWED_EXTENSIONS'] = {'log', 'txt', 'json', 'pcap', 'pcapng', 'cap'}
+
+# Create uploads directory
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+# ==================== NETWORK TRAFFIC PARSER ====================
+
+class NetworkTrafficParser:
+    """Parse Wireshark text exports and PCAP files"""
+    
+    @staticmethod
+    def is_wireshark_text(lines):
+        """Detect if file is Wireshark text export"""
+        sample = '\n'.join(lines[:5])
+        return 'Frame' in sample and 'Protocol' in sample and 'No.' in sample
+    
+    @staticmethod
+    def is_pcap_file(filepath):
+        """Check if file is a PCAP binary file"""
+        try:
+            with open(filepath, 'rb') as f:
+                magic = f.read(4)
+                # PCAP magic numbers
+                return magic in [
+                    b'\xa1\xb2\xc3\xd4',  # Standard PCAP
+                    b'\xd4\xc3\xb2\xa1',  # PCAP (different endian)
+                    b'\x0a\x0d\x0d\x0a',  # PCAPNG
+                ]
+        except:
+            return False
+    
+    @staticmethod
+    def parse_wireshark_text(lines):
+        """Parse Wireshark text export format"""
+        packets = []
+        current_packet = {}
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Match packet header: "No.     Time           Source ..."
+            if line.startswith('No.') and 'Time' in line:
+                continue
+            
+            # Match packet number line
+            packet_match = re.match(r'^\s*(\d+)\s+([\d.]+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(.+)$', line)
+            if packet_match:
+                if current_packet:
+                    packets.append(current_packet)
+                
+                current_packet = {
+                    'number': int(packet_match.group(1)),
+                    'time': float(packet_match.group(2)),
+                    'source': packet_match.group(3),
+                    'destination': packet_match.group(4),
+                    'protocol': packet_match.group(5),
+                    'length': int(packet_match.group(6)),
+                    'info': packet_match.group(7),
+                    'raw': line,
+                    'details': []
+                }
+            elif current_packet:
+                # Add detail lines to current packet
+                current_packet['details'].append(line)
+        
+        if current_packet:
+            packets.append(current_packet)
+        
+        return packets
+    
+    @staticmethod
+    def parse_pcap_with_scapy(filepath):
+        """Parse PCAP file using scapy"""
+        try:
+            from scapy.all import rdpcap, IP, TCP, UDP, ICMP
+            
+            packets_data = []
+            pcap_packets = rdpcap(filepath)
+            
+            for i, pkt in enumerate(pcap_packets):
+                packet_info = {
+                    'number': i + 1,
+                    'time': float(pkt.time),
+                    'length': len(pkt),
+                    'raw': str(pkt.summary()),
+                    'details': []
+                }
+                
+                # Extract IP layer info
+                if IP in pkt:
+                    packet_info['source'] = pkt[IP].src
+                    packet_info['destination'] = pkt[IP].dst
+                    packet_info['protocol'] = pkt[IP].proto
+                else:
+                    packet_info['source'] = 'N/A'
+                    packet_info['destination'] = 'N/A'
+                    packet_info['protocol'] = 'N/A'
+                
+                # Determine protocol name
+                if TCP in pkt:
+                    packet_info['protocol'] = 'TCP'
+                    packet_info['sport'] = pkt[TCP].sport
+                    packet_info['dport'] = pkt[TCP].dport
+                    packet_info['info'] = f"TCP {pkt[TCP].sport} → {pkt[TCP].dport}"
+                elif UDP in pkt:
+                    packet_info['protocol'] = 'UDP'
+                    packet_info['sport'] = pkt[UDP].sport
+                    packet_info['dport'] = pkt[UDP].dport
+                    packet_info['info'] = f"UDP {pkt[UDP].sport} → {pkt[UDP].dport}"
+                elif ICMP in pkt:
+                    packet_info['protocol'] = 'ICMP'
+                    packet_info['info'] = f"ICMP type={pkt[ICMP].type}"
+                else:
+                    packet_info['info'] = packet_info['raw']
+                
+                packets_data.append(packet_info)
+            
+            return packets_data
+        except ImportError:
+            raise Exception("Scapy not installed. Install with: pip install scapy")
+        except Exception as e:
+            raise Exception(f"PCAP parsing failed: {str(e)}")
+
+# ==================== LOG PARSER ====================
+
+class LogParser:
+    """Auto-detects and parses various log formats"""
+    
+    @staticmethod
+    def detect_format(lines, filepath=None):
+        """Detect log format from sample lines"""
+        # Check if it's a PCAP file first
+        if filepath and NetworkTrafficParser.is_pcap_file(filepath):
+            return 'pcap'
+        
+        # Check if it's Wireshark text
+        if NetworkTrafficParser.is_wireshark_text(lines):
+            return 'wireshark_text'
+        
+        sample = '\n'.join(lines[:10])
+        
+        if re.search(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}', sample):
+            return 'iso8601'
+        elif re.search(r'\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}', sample):
+            return 'syslog'
+        elif re.search(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', sample):
+            return 'apache'
+        elif '"timestamp"' in sample or '"time"' in sample:
+            return 'json'
+        else:
+            return 'generic'
+    
+    @staticmethod
+    def parse_syslog(line):
+        """Parse syslog format: Oct 28 10:15:32 hostname service: message"""
+        pattern = r'(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+(\S+)\s+(\S+?):\s+(.+)'
+        match = re.search(pattern, line)
+        if match:
+            return {
+                'timestamp': match.group(1),
+                'hostname': match.group(2),
+                'service': match.group(3),
+                'message': match.group(4),
+                'raw': line
+            }
+        return None
+    
+    @staticmethod
+    def parse_iso8601(line):
+        """Parse ISO8601 format: 2024-10-28T10:15:32Z level service: message"""
+        pattern = r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[\w\+\-:]*)\s+(\w+)\s+(\S+):\s+(.+)'
+        match = re.search(pattern, line)
+        if match:
+            return {
+                'timestamp': match.group(1),
+                'level': match.group(2),
+                'service': match.group(3),
+                'message': match.group(4),
+                'raw': line
+            }
+        return None
+    
+    @staticmethod
+    def parse_apache(line):
+        """Parse Apache/Nginx access logs"""
+        pattern = r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*?\[([^\]]+)\]\s+"(\w+)\s+([^"]+)"\s+(\d+)\s+(\d+)'
+        match = re.search(pattern, line)
+        if match:
+            return {
+                'ip': match.group(1),
+                'timestamp': match.group(2),
+                'method': match.group(3),
+                'path': match.group(4),
+                'status': match.group(5),
+                'size': match.group(6),
+                'raw': line
+            }
+        return None
+    
+    @staticmethod
+    def parse_json(line):
+        """Parse JSON log entries"""
+        try:
+            data = json.loads(line)
+            data['raw'] = line
+            return data
+        except:
+            return None
+    
+    @staticmethod
+    def parse_generic(line):
+        """Fallback parser for unknown formats"""
+        return {
+            'raw': line,
+            'message': line.strip()
+        }
+    
+    @classmethod
+    def parse_logs(cls, file_path):
+        """Main parsing function with auto-detection"""
+        # Check if it's a PCAP file
+        if NetworkTrafficParser.is_pcap_file(file_path):
+            packets = NetworkTrafficParser.parse_pcap_with_scapy(file_path)
+            return packets, 'pcap'
+        
+        # Otherwise read as text
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = [line.strip() for line in f if line.strip()]
+        
+        if not lines:
+            return [], 'empty'
+        
+        # Check for Wireshark text export
+        if NetworkTrafficParser.is_wireshark_text(lines):
+            packets = NetworkTrafficParser.parse_wireshark_text(lines)
+            return packets, 'wireshark_text'
+        
+        log_format = cls.detect_format(lines, file_path)
+        parsed_logs = []
+        
+        parser_map = {
+            'syslog': cls.parse_syslog,
+            'iso8601': cls.parse_iso8601,
+            'apache': cls.parse_apache,
+            'json': cls.parse_json,
+            'generic': cls.parse_generic
+        }
+        
+        parser = parser_map.get(log_format, cls.parse_generic)
+        
+        for line in lines:
+            parsed = parser(line)
+            if parsed:
+                parsed_logs.append(parsed)
+        
+        return parsed_logs, log_format
+
+# ==================== ANOMALY DETECTOR ====================
+
+class AnomalyDetector:
+    """Isolation Forest-based anomaly detection"""
+    
+    def __init__(self, contamination=0.1):
+        self.model = IsolationForest(
+            contamination=contamination,
+            random_state=42,
+            n_estimators=100
+        )
+        self.encoders = {}
+    
+    def extract_features_network(self, packets):
+        """Extract features from network packets"""
+        features = []
+        
+        for pkt in packets:
+            feature_vec = []
+            
+            # Packet length
+            feature_vec.append(pkt.get('length', 0))
+            
+            # Protocol encoding (simple hash)
+            protocol = str(pkt.get('protocol', 'unknown'))
+            feature_vec.append(hash(protocol) % 1000)
+            
+            # Source port (if available)
+            feature_vec.append(pkt.get('sport', 0))
+            
+            # Destination port (if available)
+            feature_vec.append(pkt.get('dport', 0))
+            
+            # Info length
+            info = pkt.get('info', '')
+            feature_vec.append(len(info))
+            
+            # Time delta (difference from previous packet)
+            time_val = pkt.get('time', 0)
+            feature_vec.append(float(time_val))
+            
+            features.append(feature_vec)
+        
+        return np.array(features)
+    
+    def extract_features(self, logs):
+        """Extract numerical features from log entries"""
+        features = []
+        
+        for log in logs:
+            feature_vec = []
+            
+            # Message length
+            msg = log.get('message', log.get('info', log.get('raw', '')))
+            feature_vec.append(len(str(msg)))
+            
+            # Count special characters
+            feature_vec.append(sum(1 for c in str(msg) if not c.isalnum() and not c.isspace()))
+            
+            # Count digits
+            feature_vec.append(sum(1 for c in str(msg) if c.isdigit()))
+            
+            # Error keywords
+            error_keywords = ['error', 'fail', 'denied', 'unauthorized', 'invalid', 'exception']
+            feature_vec.append(sum(1 for kw in error_keywords if kw in str(msg).lower()))
+            
+            # Suspicious keywords
+            suspicious = ['root', 'admin', 'sudo', 'password', 'auth', 'exploit', 'attack']
+            feature_vec.append(sum(1 for kw in suspicious if kw in str(msg).lower()))
+            
+            # HTTP status or packet length (if present)
+            status = log.get('status', log.get('length', 200))
+            try:
+                feature_vec.append(int(status))
+            except:
+                feature_vec.append(200)
+            
+            features.append(feature_vec)
+        
+        return np.array(features)
+    
+    def detect(self, logs, is_network=False):
+        """Detect anomalies in parsed logs or network packets"""
+        if len(logs) < 10:
+            return [False] * len(logs), []
+        
+        # Use appropriate feature extraction
+        if is_network:
+            X = self.extract_features_network(logs)
+        else:
+            X = self.extract_features(logs)
+        
+        predictions = self.model.fit_predict(X)
+        scores = self.model.score_samples(X)
+        
+        # -1 = anomaly, 1 = normal
+        is_anomaly = predictions == -1
+        
+        # Get anomalous entries with scores
+        anomalies = []
+        for i, (is_anom, score) in enumerate(zip(is_anomaly, scores)):
+            if is_anom:
+                anomalies.append({
+                    'index': i,
+                    'log': logs[i],
+                    'score': float(score),
+                    'severity': 'high' if score < -0.5 else 'medium'
+                })
+        
+        return is_anomaly, anomalies
+
+# ==================== AI SUMMARIZER ====================
+
+class OllamaSummarizer:
+    """Generate summaries using local Ollama LLM"""
+    
+    def __init__(self, model='llama3.2', base_url='http://localhost:11434'):
+        self.model = model
+        self.base_url = base_url
+    
+    def generate_summary(self, anomalies, log_format):
+        """Generate natural language summary of findings"""
+        if not anomalies:
+            return "No significant anomalies detected. All log entries appear normal."
+        
+        # Prepare context for the LLM
+        is_network = log_format in ['pcap', 'wireshark_text']
+        
+        if is_network:
+            context = f"Analyzed {len(anomalies)} suspicious network packets from {log_format} capture.\n\n"
+            context += "Sample anomalies:\n"
+            
+            for i, anom in enumerate(anomalies[:5]):
+                pkt = anom['log']
+                src = pkt.get('source', 'N/A')
+                dst = pkt.get('destination', 'N/A')
+                proto = pkt.get('protocol', 'N/A')
+                info = pkt.get('info', '')[:100]
+                context += f"{i+1}. [{anom['severity'].upper()}] {src} → {dst} ({proto}): {info}\n"
+            
+            prompt = f"""You are a network security analyst. Analyze these suspicious network packets and provide a brief summary.
+
+{context}
+
+Provide a concise summary covering:
+1. What types of suspicious network activities were detected
+2. Potential threats (port scans, DDoS, unusual protocols, etc.)
+3. The severity level (high/medium/low)
+4. Recommended actions
+
+Keep it under 200 words and use clear, professional language."""
+        else:
+            context = f"Analyzed {len(anomalies)} suspicious log entries (Format: {log_format}).\n\n"
+            context += "Sample anomalies:\n"
+            
+            for i, anom in enumerate(anomalies[:5]):
+                log = anom['log']
+                msg = log.get('message', log.get('raw', ''))[:200]
+                context += f"{i+1}. [{anom['severity'].upper()}] {msg}\n"
+            
+            prompt = f"""You are a cybersecurity analyst. Analyze these log anomalies and provide a brief summary.
+
+{context}
+
+Provide a concise summary covering:
+1. What types of suspicious activities were detected
+2. The severity level (high/medium/low)
+3. Recommended actions
+
+Keep it under 200 words and use clear, professional language."""
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": False
+                },
+                timeout=60
+            )
+            
+            if response.status_code == 200:
+                return response.json()['response']
+            else:
+                return self._fallback_summary(anomalies, is_network)
+        except Exception as e:
+            print(f"Ollama error: {e}")
+            return self._fallback_summary(anomalies, is_network)
+    
+    def _fallback_summary(self, anomalies, is_network=False):
+        """Fallback template-based summary if Ollama fails"""
+        high = sum(1 for a in anomalies if a['severity'] == 'high')
+        medium = len(anomalies) - high
+        
+        if is_network:
+            summary = f"Network traffic analysis detected {len(anomalies)} anomalies: "
+            summary += f"{high} high-severity and {medium} medium-severity packets.\n\n"
+            summary += "Anomalous patterns may include unusual protocols, port activity, "
+            summary += "packet sizes, or connection patterns.\n\n"
+            summary += "Recommendation: Investigate high-severity packets for potential "
+            summary += "port scans, DDoS attempts, or unauthorized access."
+        else:
+            summary = f"Analysis detected {len(anomalies)} anomalies: "
+            summary += f"{high} high-severity and {medium} medium-severity events.\n\n"
+            summary += "Common patterns include unusual message lengths, suspicious keywords, "
+            summary += "or atypical activity patterns.\n\n"
+            summary += "Recommendation: Review flagged entries manually and investigate "
+            summary += "high-severity items immediately."
+        
+        return summary
+
+# ==================== FLASK ROUTES ====================
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+
+@app.route('/')
+def index():
+    return render_template_string(INDEX_TEMPLATE)
+
+@app.route('/analyze', methods=['POST'])
+def analyze():
+    if 'logfile' not in request.files:
+        return jsonify({'error': 'No file uploaded'}), 400
+    
+    file = request.files['logfile']
+    
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+    
+    if not allowed_file(file.filename):
+        return jsonify({'error': 'Invalid file type. Use .log, .txt, .json, .pcap, or .pcapng'}), 400
+    
+    # Save uploaded file
+    filename = secure_filename(file.filename)
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    file.save(filepath)
+    
+    try:
+        # Parse logs
+        logs, log_format = LogParser.parse_logs(filepath)
+        
+        if not logs:
+            return jsonify({'error': 'No valid log entries found'}), 400
+        
+        # Detect if it's network traffic
+        is_network = log_format in ['pcap', 'wireshark_text']
+        
+        # Detect anomalies
+        detector = AnomalyDetector(contamination=0.1)
+        is_anomaly, anomalies = detector.detect(logs, is_network=is_network)
+        
+        # Generate AI summary
+        summarizer = OllamaSummarizer()
+        summary = summarizer.generate_summary(anomalies, log_format)
+        
+        # Prepare highlighted logs
+        highlighted_logs = []
+        for i, log in enumerate(logs[:500]):  # Limit to first 500 for display
+            if is_network:
+                raw_display = f"{log.get('number', i)} | {log.get('source', 'N/A')} → {log.get('destination', 'N/A')} | {log.get('protocol', 'N/A')} | {log.get('info', '')}"
+            else:
+                raw_display = log.get('raw', str(log))
+            
+            highlighted_logs.append({
+                'raw': raw_display[:500],  # Truncate long lines
+                'is_anomaly': bool(is_anomaly[i]),
+                'index': i
+            })
+        
+        # Clean up uploaded file
+        os.remove(filepath)
+        
+        return jsonify({
+            'success': True,
+            'log_format': log_format,
+            'total_entries': len(logs),
+            'anomaly_count': len(anomalies),
+            'anomalies': anomalies[:100],  # Limit to 100 anomalies for display
+            'summary': summary,
+            'highlighted_logs': highlighted_logs,
+            'is_network': is_network
+        })
+    
+    except Exception as e:
+        if os.path.exists(filepath):
+            os.remove(filepath)
+        return jsonify({'error': f'Analysis failed: {str(e)}'}), 500
+
+# ==================== HTML TEMPLATE ====================
+
+INDEX_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GBVSR Combo Guide</title>
+    <title>AI Threat Log Analyzer</title>
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-
+        
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #1a1a2e, #16213e, #0f0f1e);
-            color: #e0e0e0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
-        }
-
-        .header {
-            background: linear-gradient(90deg, #2d1b69, #8b5a3c, #4a4a4a);
             padding: 20px;
-            text-align: center;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
         }
-
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+        
         .header h1 {
-            color: #d4af37;
-            font-size: 2.5rem;
-            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.7);
+            font-size: 2.5em;
             margin-bottom: 10px;
         }
-
+        
         .header p {
-            color: #c0c0c0;
-            font-size: 1.1rem;
+            font-size: 1.1em;
+            opacity: 0.9;
         }
-
-        .character-selector {
-            background: rgba(45, 27, 105, 0.3);
-            padding: 25px;
-            margin: 20px;
-            border-radius: 15px;
-            border: 2px solid #4a4a4a;
-        }
-
-        .character-selector h2 {
-            color: #d4af37;
-            text-align: center;
+        
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
             margin-bottom: 20px;
-            font-size: 1.5rem;
         }
-
-        .character-grid {
+        
+        .upload-section {
+            text-align: center;
+            padding: 40px 20px;
+        }
+        
+        .file-input-wrapper {
+            position: relative;
+            display: inline-block;
+            margin: 20px 0;
+        }
+        
+        .file-input-wrapper input[type=file] {
+            position: absolute;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+        
+        .file-input-label {
+            display: inline-block;
+            padding: 15px 30px;
+            background: #667eea;
+            color: white;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.3s;
+            font-size: 1.1em;
+        }
+        
+        .file-input-label:hover {
+            background: #5568d3;
+        }
+        
+        .file-name {
+            margin: 10px 0;
+            color: #666;
+        }
+        
+        .analyze-btn {
+            padding: 15px 50px;
+            background: #764ba2;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.1em;
+            cursor: pointer;
+            transition: background 0.3s;
+            margin-top: 10px;
+        }
+        
+        .analyze-btn:hover:not(:disabled) {
+            background: #643a8c;
+        }
+        
+        .analyze-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .results {
+            display: none;
+        }
+        
+        .results.show {
+            display: block;
+        }
+        
+        .summary-box {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        
+        .stats {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 15px;
-            max-width: 800px;
+            margin: 20px 0;
+        }
+        
+        .stat-card {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #667eea;
+        }
+        
+        .stat-label {
+            color: #666;
+            margin-top: 5px;
+        }
+        
+        .log-viewer {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            max-height: 500px;
+            overflow-y: auto;
+            margin: 20px 0;
+        }
+        
+        .log-line {
+            padding: 5px;
+            margin: 2px 0;
+            border-left: 3px solid transparent;
+            word-wrap: break-word;
+        }
+        
+        .log-line.anomaly {
+            background: rgba(255, 59, 48, 0.1);
+            border-left-color: #ff3b30;
+        }
+        
+        .anomaly-list {
+            margin: 20px 0;
+        }
+        
+        .anomaly-item {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        
+        .anomaly-item.high {
+            background: #f8d7da;
+            border-left-color: #dc3545;
+        }
+        
+        .severity-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        
+        .severity-high {
+            background: #dc3545;
+            color: white;
+        }
+        
+        .severity-medium {
+            background: #ffc107;
+            color: #000;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            display: none;
+        }
+        
+        .loading.show {
+            display: block;
+        }
+        
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
             margin: 0 auto;
         }
-
-        .character-card {
-            background: linear-gradient(135deg, #2a2a3e, #3a3a4e);
-            border: 2px solid #4a4a4a;
-            border-radius: 10px;
-            padding: 20px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.3s ease;
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
-
-        .character-card:hover {
-            border-color: #d4af37;
-            transform: translateY(-5px);
-            box-shadow: 0 10px 30px rgba(212, 175, 55, 0.2);
-        }
-
-        .character-card.selected {
-            border-color: #d4af37;
-            background: linear-gradient(135deg, #3a2a1e, #4a3a2e);
-            box-shadow: 0 0 20px rgba(212, 175, 55, 0.3);
-        }
-
-        .character-name {
-            color: #d4af37;
-            font-size: 1.2rem;
-            font-weight: bold;
-            margin-bottom: 10px;
-        }
-
-        .character-desc {
-            color: #c0c0c0;
-            font-size: 0.9rem;
-            line-height: 1.4;
-        }
-
-        .controls {
-            display: flex;
-            gap: 20px;
-            padding: 20px;
-            background: rgba(45, 27, 105, 0.2);
-            flex-wrap: wrap;
-            justify-content: center;
-        }
-
-        .control-group {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-
-        .control-group label {
-            color: #d4af37;
-            font-weight: bold;
-            font-size: 0.9rem;
-        }
-
-        select, input {
-            padding: 8px 12px;
-            border: 2px solid #4a4a4a;
-            border-radius: 5px;
-            background: #2a2a2a;
-            color: #e0e0e0;
-            font-size: 0.9rem;
-        }
-
-        select:focus, input:focus {
-            outline: none;
-            border-color: #d4af37;
-        }
-
-        .toggle-group {
-            display: flex;
-            gap: 15px;
-            align-items: center;
-        }
-
-        .toggle {
-            position: relative;
-            display: inline-block;
-            width: 50px;
-            height: 24px;
-        }
-
-        .toggle input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-
-        .slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: #4a4a4a;
-            transition: .4s;
-            border-radius: 24px;
-        }
-
-        .slider:before {
-            position: absolute;
-            content: "";
-            height: 18px;
-            width: 18px;
-            left: 3px;
-            bottom: 3px;
-            background-color: white;
-            transition: .4s;
-            border-radius: 50%;
-        }
-
-        input:checked + .slider {
-            background-color: #d4af37;
-        }
-
-        input:checked + .slider:before {
-            transform: translateX(26px);
-        }
-
-        .combo-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(600px, 1fr));
-            gap: 20px;
-            padding: 20px;
-        }
-
-        .combo-card {
-            background: linear-gradient(135deg, #2a2a3e, #3a3a4e);
-            border: 2px solid #4a4a4a;
-            border-radius: 10px;
-            padding: 20px;
-            transition: all 0.3s ease;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .combo-card:hover {
-            border-color: #d4af37;
-            transform: translateY(-5px);
-            box-shadow: 0 10px 30px rgba(212, 175, 55, 0.2);
-        }
-
-        .combo-card.favorited {
-            border-color: #ff6b6b;
-            background: linear-gradient(135deg, #3e2a2a, #4e3a3a);
-        }
-
-        .combo-card.practiced {
-            border-color: #51cf66;
-            background: linear-gradient(135deg, #2a3e2a, #3a4e3a);
-        }
-
-        .combo-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 15px;
-        }
-
-        .combo-title {
-            color: #d4af37;
-            font-size: 1.3rem;
-            font-weight: bold;
-            margin-bottom: 5px;
-        }
-
-        .combo-tags {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            margin-bottom: 10px;
-        }
-
-        .tag {
-            padding: 3px 8px;
-            border-radius: 12px;
-            font-size: 0.75rem;
-            font-weight: bold;
-        }
-
-        .tag.difficulty-beginner { background: #51cf66; color: #000; }
-        .tag.difficulty-intermediate { background: #ffd43b; color: #000; }
-        .tag.difficulty-advanced { background: #ff8787; color: #000; }
-        .tag.difficulty-expert { background: #9775fa; color: #fff; }
-        .tag.situation { background: #74c0fc; color: #000; }
-
-        .combo-actions {
-            display: flex;
-            gap: 10px;
-        }
-
-        .action-btn {
-            background: none;
-            border: 1px solid #4a4a4a;
-            color: #e0e0e0;
-            padding: 5px 8px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 0.8rem;
-            transition: all 0.3s;
-        }
-
-        .action-btn:hover {
-            border-color: #d4af37;
-            color: #d4af37;
-        }
-
-        .action-btn.active {
-            background: #d4af37;
-            color: #000;
-            border-color: #d4af37;
-        }
-
-        .combo-sequence {
-            background: rgba(0, 0, 0, 0.3);
+        
+        .error {
+            background: #f8d7da;
+            color: #721c24;
             padding: 15px;
             border-radius: 8px;
-            margin: 15px 0;
+            margin: 20px 0;
+            display: none;
         }
-
-        .input-display {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex-wrap: wrap;
-            margin-bottom: 10px;
-        }
-
-        .input-group {
-            display: flex;
-            align-items: center;
-            gap: 3px;
-            background: rgba(74, 74, 74, 0.5);
-            padding: 5px 8px;
-            border-radius: 5px;
-            border: 1px solid #4a4a4a;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .input-group.active {
-            border-color: #d4af37;
-            background: rgba(212, 175, 55, 0.2);
-        }
-
-        .input-group.active::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(212, 175, 55, 0.3), transparent);
-            animation: highlight 0.5s ease-in-out;
-        }
-
-        @keyframes highlight {
-            0% { transform: translateX(-100%); }
-            100% { transform: translateX(100%); }
-        }
-
-        .dpad {
-            display: inline-grid;
-            grid-template-columns: repeat(3, 12px);
-            grid-template-rows: repeat(3, 12px);
-            gap: 1px;
-            background: #2a2a2a;
-            padding: 2px;
-            border-radius: 3px;
-            border: 1px solid #4a4a4a;
-        }
-
-        .dpad-square {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            width: 12px;
-            height: 12px;
-        }
-
-        .dpad-square.active {
-            background: #74c0fc;
-            border-color: #339af0;
-            box-shadow: 0 0 4px rgba(116, 192, 252, 0.5);
-        }
-
-        .motion-sequence {
-            display: flex;
-            align-items: center;
-            gap: 2px;
-        }
-
-        .motion-input, .button-input {
-            font-family: 'Courier New', monospace;
-            font-weight: bold;
-            font-size: 0.9rem;
-        }
-
-        .motion-input {
-            color: #74c0fc;
-        }
-
-        .button-input {
-            color: #ffd43b;
-        }
-
-        .combo-arrow {
-            color: #8b5a3c;
-            font-weight: bold;
-            font-size: 1.2rem;
-        }
-
-        .notation-display {
-            font-family: 'Courier New', monospace;
-            color: #c0c0c0;
-            font-size: 0.9rem;
-            background: rgba(0, 0, 0, 0.2);
-            padding: 10px;
-            border-radius: 5px;
-            border-left: 3px solid #d4af37;
-        }
-
-        .combo-properties {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-            gap: 10px;
-            margin-top: 15px;
-        }
-
-        .property {
-            background: rgba(74, 74, 74, 0.3);
-            padding: 8px 12px;
-            border-radius: 5px;
-            text-align: center;
-        }
-
-        .property-label {
+        
+        .error.show {
             display: block;
-            font-size: 0.8rem;
-            color: #a0a0a0;
-            margin-bottom: 2px;
         }
-
-        .property-value {
-            font-weight: bold;
-            color: #d4af37;
-        }
-
-        .combo-notes {
-            margin-top: 15px;
-            padding: 10px;
-            background: rgba(139, 90, 60, 0.2);
-            border-radius: 5px;
-            border-left: 3px solid #8b5a3c;
-            font-size: 0.9rem;
-            color: #e0e0e0;
-        }
-
-        .no-results {
-            text-align: center;
-            color: #8a8a8a;
-            font-size: 1.2rem;
-            padding: 40px;
-            grid-column: 1 / -1;
-        }
-
-        .no-character {
-            text-align: center;
-            color: #8a8a8a;
-            font-size: 1.5rem;
-            padding: 60px 20px;
-            grid-column: 1 / -1;
-        }
-
-        .play-btn {
-            background: linear-gradient(45deg, #4ecdc4, #44a08d);
-            border: none;
+        
+        .network-badge {
+            display: inline-block;
+            background: #17a2b8;
             color: white;
-            padding: 8px 15px;
+            padding: 5px 15px;
             border-radius: 20px;
-            cursor: pointer;
-            font-weight: bold;
-            transition: all 0.3s;
-        }
-
-        .play-btn:hover {
-            transform: scale(1.05);
-            box-shadow: 0 5px 15px rgba(78, 205, 196, 0.3);
-        }
-
-        @media (max-width: 768px) {
-            .combo-grid {
-                grid-template-columns: 1fr;
-                padding: 10px;
-            }
-            
-            .controls {
-                flex-direction: column;
-                align-items: center;
-            }
-            
-            .header h1 {
-                font-size: 2rem;
-            }
-
-            .character-grid {
-                grid-template-columns: 1fr;
-            }
+            font-size: 0.9em;
+            margin-left: 10px;
         }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>GBVSR Combo Guide</h1>
-        <p>Granblue Fantasy Versus Rising - Master Every Character</p>
-    </div>
-
-    <div class="character-selector">
-        <h2>Select a Character</h2>
-        <div class="character-grid">
-            <div class="character-card" onclick="selectCharacter('nier')">
-                <div class="character-name">Nier</div>
-                <div class="character-desc">Death-wielding reaper with unique recall mechanics and soul manipulation</div>
-            </div>
-            <div class="character-card" onclick="selectCharacter('vikala')">
-                <div class="character-name">Vikala</div>
-                <div class="character-desc">Versatile rushdown character with strong neutral and bravery point management</div>
-            </div>
-            <div class="character-card" onclick="selectCharacter('galleon')">
-                <div class="character-name">Galleon</div>
-                <div class="character-desc">Command grab specialist with powerful mix-ups and oki setups</div>
-            </div>
-            <div class="character-card" onclick="selectCharacter('siegfried')">
-                <div class="character-name">Siegfried</div>
-                <div class="character-desc">Heavy-hitting swordsman with dragon blood mechanics and unblockables</div>
-            </div>
-        </div>
-    </div>
-
-    <div class="controls" style="display: none;" id="controls">
-        <div class="control-group">
-            <label for="difficultyFilter">Difficulty</label>
-            <select id="difficultyFilter">
-                <option value="">All Difficulties</option>
-                <option value="beginner">Beginner</option>
-                <option value="intermediate">Intermediate</option>
-                <option value="advanced">Advanced</option>
-                <option value="expert">Expert</option>
-            </select>
+    <div class="container">
+        <div class="header">
+            <h1>🛡️ AI Threat Log Analyzer</h1>
+            <p>Upload system logs, network captures (PCAP), or Wireshark exports to detect anomalies</p>
         </div>
         
-        <div class="control-group">
-            <label for="situationFilter">Situation</label>
-            <select id="situationFilter">
-                <option value="">All Situations</option>
-                <option value="midscreen">Midscreen</option>
-                <option value="corner">Corner</option>
-                <option value="punish">Punish</option>
-                <option value="anti-air">Anti-Air</option>
-                <option value="oki">Oki Setup</option>
-            </select>
+        <div class="card upload-section">
+            <h2>Upload Log File or Network Capture</h2>
+            <p style="color: #666; margin: 10px 0;">Supports: .log, .txt, .json, .pcap, .pcapng files</p>
+            
+            <div class="file-input-wrapper">
+                <input type="file" id="logfile" accept=".log,.txt,.json,.pcap,.pcapng,.cap">
+                <label class="file-input-label" for="logfile">Choose File</label>
+            </div>
+            
+            <div class="file-name" id="fileName">No file selected</div>
+            
+            <button class="analyze-btn" id="analyzeBtn" disabled>Analyze</button>
         </div>
         
-        <div class="control-group">
-            <label for="searchInput">Search</label>
-            <input type="text" id="searchInput" placeholder="Search combos...">
+        <div class="error" id="errorBox"></div>
+        
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p style="margin-top: 20px; color: white; font-size: 1.1em;">Analyzing...</p>
         </div>
         
-        <div class="control-group">
-            <label>Display Options</label>
-            <div class="toggle-group">
-                <span>Notation</span>
-                <label class="toggle">
-                    <input type="checkbox" id="showNotation" checked>
-                    <span class="slider"></span>
-                </label>
-                <span>Visual</span>
-                <label class="toggle">
-                    <input type="checkbox" id="showVisual" checked>
-                    <span class="slider"></span>
-                </label>
+        <div class="results" id="results">
+            <div class="card">
+                <h2>Analysis Results <span id="networkBadge"></span></h2>
+                
+                <div class="stats">
+                    <div class="stat-card">
+                        <div class="stat-value" id="totalEntries">0</div>
+                        <div class="stat-label">Total Entries</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="anomalyCount">0</div>
+                        <div class="stat-label">Anomalies Detected</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="logFormat">-</div>
+                        <div class="stat-label">Format</div>
+                    </div>
+                </div>
+                
+                <div class="summary-box">
+                    <h3>AI Summary</h3>
+                    <p id="aiSummary">-</p>
+                </div>
+                
+                <h3>Detected Anomalies</h3>
+                <div class="anomaly-list" id="anomalyList"></div>
+                
+                <h3>Viewer (Highlighted)</h3>
+                <div class="log-viewer" id="logViewer"></div>
             </div>
         </div>
     </div>
-
-    <div class="combo-grid" id="comboGrid">
-        <div class="no-character">👆 Select a character above to view their combos</div>
-    </div>
-
+    
     <script>
-        const characterCombos = {
-            nier: [
-                {
-                    id: 1,
-                    character: "nier",
-                    name: "Basic BnB",
-                    difficulty: "beginner",
-                    situation: "midscreen",
-                    damage: 3200,
-                    meter: 15,
-                    corner: 65,
-                    inputs: [
-                        { motion: "5", button: "L", timing: 600 },
-                        { motion: "5", button: "M", timing: 400 },
-                        { motion: "5", button: "H", timing: 500 },
-                        { motion: "236", button: "H", timing: 600 }
-                    ],
-                    notation: "5L > 5M > 5H > 236H",
-                    notes: "Basic combo that works from most ranges. Good starter combo for learning Nier's timing."
-                },
-                {
-                    id: 2,
-                    character: "nier",
-                    name: "Volleyball Combo",
-                    difficulty: "intermediate",
-                    situation: "midscreen",
-                    damage: 4100,
-                    meter: 25,
-                    corner: 70,
-                    inputs: [
-                        { motion: "5", button: "L", timing: 500 },
-                        { motion: "5", button: "M", timing: 400 },
-                        { motion: "5", button: "H", timing: 600 },
-                        { motion: "j", button: "", timing: 300 },
-                        { motion: "j", button: "M", timing: 400 },
-                        { motion: "j", button: "H", timing: 500 },
-                        { motion: "214", button: "H", timing: 700 }
-                    ],
-                    notation: "5L > 5M > 5H > j.M > j.H > 214H",
-                    notes: "Classic volleyball combo that juggles the opponent. Named for the way it bounces them up and down like a volleyball."
-                },
-                {
-                    id: 3,
-                    character: "nier",
-                    name: "Death Recall Ender",
-                    difficulty: "intermediate",
-                    situation: "midscreen",
-                    damage: 3500,
-                    meter: 20,
-                    corner: 60,
-                    inputs: [
-                        { motion: "5", button: "L", timing: 500 },
-                        { motion: "5", button: "M", timing: 400 },
-                        { motion: "214", button: "L", timing: 700 },
-                        { motion: "236", button: "H", timing: 800 },
-                        { motion: "5", button: "U", timing: 600 }
-                    ],
-                    notation: "5L > 5M > 214L > 236H > 5U",
-                    notes: "Essential combo that ends with Death recall. The 5U ender saves 2 stocks of recall time, accelerating Death's recharge timer."
-                }
-            ],
-            vikala: [
-                {
-                    id: 4,
-                    character: "vikala",
-                    name: "Basic Triple Attack",
-                    difficulty: "beginner",
-                    situation: "midscreen",
-                    damage: 2800,
-                    meter: 10,
-                    corner: 45,
-                    inputs: [
-                        { motion: "c", button: "L", timing: 500 },
-                        { motion: "c", button: "M", timing: 400 },
-                        { motion: "c", button: "H", timing: 500 },
-                        { motion: "623", button: "H", timing: 700 }
-                    ],
-                    notation: "c.LXX > 623H",
-                    notes: "Basic triple attack combo into launcher. Good starter for learning Vikala's chain combos."
-                },
-                {
-                    id: 5,
-                    character: "vikala",
-                    name: "Bravery Point Setup",
-                    difficulty: "intermediate",
-                    situation: "midscreen",
-                    damage: 3400,
-                    meter: 20,
-                    corner: 55,
-                    inputs: [
-                        { motion: "c", button: "L", timing: 500 },
-                        { motion: "c", button: "M", timing: 400 },
-                        { motion: "623", button: "H", timing: 700 },
-                        { motion: "2", button: "U", timing: 600 }
-                    ],
-                    notation: "c.LXX > 623H > 2U",
-                    notes: "Combo that sets up bravery point advantage. The 2U ender gives frame advantage for pressure."
-                },
-                {
-                    id: 6,
-                    character: "vikala",
-                    name: "Corner Carry Chain",
-                    difficulty: "advanced",
-                    situation: "midscreen",
-                    damage: 4200,
-                    meter: 30,
-                    corner: 80,
-                    inputs: [
-                        { motion: "2", button: "M", timing: 600 },
-                        { motion: "5", button: "H", timing: 500 },
-                        { motion: "623", button: "M", timing: 700 },
-                        { motion: "236", button: "H", timing: 800 }
-                    ],
-                    notation: "2M > 5H > 623M > 236H",
-                    notes: "Strong corner carry combo. Excellent for moving the opponent to the corner for pressure."
-                }
-            ],
-            galleon: [
-                {
-                    id: 7,
-                    character: "galleon",
-                    name: "Basic Command Grab Setup",
-                    difficulty: "beginner",
-                    situation: "midscreen",
-                    damage: 3000,
-                    meter: 15,
-                    corner: 50,
-                    inputs: [
-                        { motion: "c", button: "L", timing: 500 },
-                        { motion: "c", button: "M", timing: 400 },
-                        { motion: "c", button: "H", timing: 500 },
-                        { motion: "5", button: "U", timing: 600 },
-                        { motion: "623", button: "L", timing: 700 }
-                    ],
-                    notation: "c.XXX > 5U, 623L",
-                    notes: "Basic combo that leads into plus frames for command grab mixups. Sets up Galleon's gameplan perfectly."
-                },
-                {
-                    id: 8,
-                    character: "galleon",
-                    name: "Oki Setup Special",
-                    difficulty: "intermediate",
-                    situation: "oki",
-                    damage: 3600,
-                    meter: 25,
-                    corner: 40,
-                    inputs: [
-                        { motion: "6", button: "H", timing: 700 },
-                        { motion: "214", button: "M", timing: 800 },
-                        { motion: "22", button: "L", timing: 600 }
-                    ],
-                    notation: "6H > 214M > 22L",
-                    notes: "Oki setup that creates advantageous wakeup situations. The 22L gives great frame advantage for mixups."
-                },
-                {
-                    id: 9,
-                    character: "galleon",
-                    name: "High Damage Punish",
-                    difficulty: "advanced",
-                    situation: "punish",
-                    damage: 4800,
-                    meter: 40,
-                    corner: 70,
-                    inputs: [
-                        { motion: "2", button: "H", timing: 700 },
-                        { motion: "236", button: "H", timing: 800 },
-                        { motion: "623", button: "H", timing: 900 },
-                        { motion: "22", button: "H", timing: 1000 }
-                    ],
-                    notation: "2H > 236H > 623H > 22H",
-                    notes: "High damage punish combo. Use when you have a guaranteed opening for maximum damage."
-                }
-            ],
-            siegfried: [
-                {
-                    id: 10,
-                    character: "siegfried",
-                    name: "Basic Sword Combo",
-                    difficulty: "beginner",
-                    situation: "midscreen",
-                    damage: 3400,
-                    meter: 20,
-                    corner: 60,
-                    inputs: [
-                        { motion: "5", button: "M", timing: 600 },
-                        { motion: "5", button: "H", timing: 500 },
-                        { motion: "623", button: "L", timing: 700 }
-                    ],
-                    notation: "5M > 5H > 623L",
-                    notes: "Basic sword combo with good damage. Foundation of Siegfried's neutral game combos."
-                },
-                {
-                    id: 11,
-                    character: "siegfried",
-                    name: "Anti-Air Dragon Punch",
-                    difficulty: "intermediate",
-                    situation: "anti-air",
-                    damage: 4000,
-                    meter: 25,
-                    corner: 50,
-                    inputs: [
-                        { motion: "2", button: "H", timing: 700 },
-                        { motion: "623", button: "H", timing: 800 },
-                        { motion: "214", button: "L", timing: 600 }
-                    ],
-                    notation: "2H > 623H > 214L",
-                    notes: "Strong anti-air conversion. Great for punishing jump-ins with high damage."
-                },
-                {
-                    id: 12,
-                    character: "siegfried",
-                    name: "Dragon Blood Combo",
-                    difficulty: "advanced",
-                    situation: "corner",
-                    damage: 5200,
-                    meter: 35,
-                    corner: 0,
-                    inputs: [
-                        { motion: "22", button: "L", timing: 800 },
-                        { motion: "5", button: "H", timing: 500 },
-                        { motion: "236", button: "H", timing: 700 },
-                        { motion: "22", button: "H", timing: 1000 }
-                    ],
-                    notation: "22L~L > 5H > 236H > 22H~H",
-                    notes: "Dragon blood enhanced combo with massive damage. Uses Siegfried's unique mechanic for maximum effect."
-                }
-            ]
-        };
-
-        let selectedCharacter = null;
-        let animationTimeout;
-        let favorites = new Set();
-        let practiced = new Set();
-
-        function selectCharacter(character) {
-            selectedCharacter = character;
+        const fileInput = document.getElementById('logfile');
+        const fileName = document.getElementById('fileName');
+        const analyzeBtn = document.getElementById('analyzeBtn');
+        const loading = document.getElementById('loading');
+        const results = document.getElementById('results');
+        const errorBox = document.getElementById('errorBox');
+        
+        fileInput.addEventListener('change', function() {
+            if (this.files.length > 0) {
+                fileName.textContent = this.files[0].name;
+                analyzeBtn.disabled = false;
+            } else {
+                fileName.textContent = 'No file selected';
+                analyzeBtn.disabled = true;
+            }
+        });
+        
+        analyzeBtn.addEventListener('click', async function() {
+            const file = fileInput.files[0];
+            if (!file) return;
             
-            // Update character card selection
-            document.querySelectorAll('.character-card').forEach(card => {
-                card.classList.remove('selected');
-            });
-            event.target.closest('.character-card').classList.add('selected');
+            const formData = new FormData();
+            formData.append('logfile', file);
             
-            // Show controls and render combos
-            document.getElementById('controls').style.display = 'flex';
-            renderCombos();
-        }
-
-        function createInputVisual(input) {
-            const group = document.createElement('div');
-            group.className = 'input-group';
+            // Show loading, hide results and errors
+            loading.classList.add('show');
+            results.classList.remove('show');
+            errorBox.classList.remove('show');
             
-            if (input.motion) {
-                // Create D-pad visual for directional inputs
-                if (input.motion.length === 1 && !isNaN(input.motion)) {
-                    const dpad = createDpadVisual(input.motion);
-                    group.appendChild(dpad);
-                } else if (input.motion.includes('j') || input.motion.includes('c')) {
-                    // Jump or chain notation
-                    const motion = document.createElement('span');
-                    motion.className = 'motion-input';
-                    motion.textContent = input.motion;
-                    group.appendChild(motion);
-                } else if (input.motion.length > 1) {
-                    // Multi-directional inputs like quarter circles
-                    const motionSpan = document.createElement('span');
-                    motionSpan.className = 'motion-sequence';
+            try {
+                const response = await fetch('/analyze', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                // Display results
+                displayResults(data);
+                
+            } catch (error) {
+                errorBox.textContent = 'Error: ' + error.message;
+                errorBox.classList.add('show');
+            } finally {
+                loading.classList.remove('show');
+            }
+        });
+        
+        function displayResults(data) {
+            // Update stats
+            document.getElementById('totalEntries').textContent = data.total_entries;
+            document.getElementById('anomalyCount').textContent = data.anomaly_count;
+            document.getElementById('logFormat').textContent = data.log_format.toUpperCase();
+            document.getElementById('aiSummary').textContent = data.summary;
+            
+            // Show network badge if it's network traffic
+            const networkBadge = document.getElementById('networkBadge');
+            if (data.is_network) {
+                networkBadge.innerHTML = '<span class="network-badge">📡 Network Traffic</span>';
+            } else {
+                networkBadge.innerHTML = '';
+            }
+            
+            // Display anomalies
+            const anomalyList = document.getElementById('anomalyList');
+            anomalyList.innerHTML = '';
+            
+            if (data.anomalies.length === 0) {
+                anomalyList.innerHTML = '<p style="color: #28a745;">✅ No anomalies detected. All entries appear normal.</p>';
+            } else {
+                data.anomalies.forEach(anom => {
+                    const div = document.createElement('div');
+                    div.className = `anomaly-item ${anom.severity}`;
                     
-                    // Break down complex motions into individual directions
-                    for (let i = 0; i < input.motion.length; i++) {
-                        const dir = input.motion[i];
-                        if (!isNaN(dir)) {
-                            const dpad = createDpadVisual(dir);
-                            dpad.style.display = 'inline-block';
-                            dpad.style.marginRight = '2px';
-                            motionSpan.appendChild(dpad);
-                        }
+                    const badge = document.createElement('span');
+                    badge.className = `severity-badge severity-${anom.severity}`;
+                    badge.textContent = anom.severity.toUpperCase();
+                    
+                    let display = '';
+                    if (data.is_network) {
+                        const pkt = anom.log;
+                        display = `Packet #${pkt.number || anom.index}: ${pkt.source || 'N/A'} → ${pkt.destination || 'N/A'} (${pkt.protocol || 'N/A'})<br>`;
+                        display += `<code>${(pkt.info || pkt.raw || '').substring(0, 300)}</code>`;
+                    } else {
+                        const msg = anom.log.message || anom.log.raw || '';
+                        display = `<code>${msg.substring(0, 300)}</code>`;
                     }
-                    group.appendChild(motionSpan);
-                } else {
-                    const motion = document.createElement('span');
-                    motion.className = 'motion-input';
-                    motion.textContent = input.motion;
-                    group.appendChild(motion);
-                }
+                    
+                    div.innerHTML = badge.outerHTML + '<br>' + display;
+                    anomalyList.appendChild(div);
+                });
             }
             
-            if (input.button) {
-                const button = document.createElement('span');
-                button.className = 'button-input';
-                button.textContent = input.button;
-                group.appendChild(button);
-            }
+            // Display highlighted logs
+            const logViewer = document.getElementById('logViewer');
+            logViewer.innerHTML = '';
             
-            return group;
-        }
-
-        function createDpadVisual(direction) {
-            const dpad = document.createElement('div');
-            dpad.className = 'dpad';
-            
-            const positions = ['7', '8', '9', '4', '5', '6', '1', '2', '3'];
-            
-            positions.forEach(pos => {
-                const square = document.createElement('div');
-                square.className = `dpad-square ${pos === direction ? 'active' : ''}`;
-                dpad.appendChild(square);
+            data.highlighted_logs.forEach(log => {
+                const div = document.createElement('div');
+                div.className = `log-line ${log.is_anomaly ? 'anomaly' : ''}`;
+                div.textContent = log.raw;
+                logViewer.appendChild(div);
             });
             
-            return dpad;
+            results.classList.add('show');
         }
-
-        function animateCombo(combo, card) {
-            const inputs = card.querySelectorAll('.input-group');
-            let currentStep = 0;
-            
-            function highlightStep() {
-                inputs.forEach(input => input.classList.remove('active'));
-                
-                if (currentStep < inputs.length) {
-                    inputs[currentStep].classList.add('active');
-                    
-                    const timing = combo.inputs[currentStep]?.timing || 600;
-                    currentStep++;
-                    
-                    animationTimeout = setTimeout(highlightStep, timing);
-                } else {
-                    currentStep = 0;
-                    animationTimeout = setTimeout(highlightStep, 1500);
-                }
-            }
-            
-            highlightStep();
-        }
-
-        function stopAnimation() {
-            if (animationTimeout) {
-                clearTimeout(animationTimeout);
-                animationTimeout = null;
-            }
-            document.querySelectorAll('.input-group').forEach(input => 
-                input.classList.remove('active')
-            );
-        }
-
-        function createComboCard(combo) {
-            const card = document.createElement('div');
-            card.className = `combo-card ${favorites.has(combo.id) ? 'favorited' : ''} ${practiced.has(combo.id) ? 'practiced' : ''}`;
-            
-            const showNotation = document.getElementById('showNotation').checked;
-            const showVisual = document.getElementById('showVisual').checked;
-            
-            card.innerHTML = `
-                <div class="combo-header">
-                    <div>
-                        <h3 class="combo-title">${combo.name}</h3>
-                        <div class="combo-tags">
-                            <span class="tag difficulty-${combo.difficulty}">${combo.difficulty.toUpperCase()}</span>
-                            <span class="tag situation">${combo.situation.toUpperCase()}</span>
-                        </div>
-                    </div>
-                    <div class="combo-actions">
-                        <button class="action-btn play-btn" onclick="playCombo(${combo.id}, this.parentElement.parentElement.parentElement)">
-                            ▶ Play
-                        </button>
-                        <button class="action-btn ${favorites.has(combo.id) ? 'active' : ''}" onclick="toggleFavorite(${combo.id})">
-                            ♥ Fav
-                        </button>
-                        <button class="action-btn ${practiced.has(combo.id) ? 'active' : ''}" onclick="togglePracticed(${combo.id})">
-                            ✓ Done
-                        </button>
-                    </div>
-                </div>
-                
-                <div class="combo-sequence">
-                    ${showVisual ? `
-                    <div class="input-display">
-                        ${combo.inputs.map((input, index) => 
-                            createInputVisual(input).outerHTML + 
-                            (index < combo.inputs.length - 1 ? '<span class="combo-arrow">></span>' : '')
-                        ).join('')}
-                    </div>
-                    ` : ''}
-                    
-                    ${showNotation ? `
-                    <div class="notation-display">
-                        ${combo.notation}
-                    </div>
-                    ` : ''}
-                </div>
-                
-                <div class="combo-properties">
-                    <div class="property">
-                        <span class="property-label">Damage</span>
-                        <span class="property-value">${combo.damage}</span>
-                    </div>
-                    <div class="property">
-                        <span class="property-label">Meter</span>
-                        <span class="property-value">${combo.meter}%</span>
-                    </div>
-                    <div class="property">
-                        <span class="property-label">Corner</span>
-                        <span class="property-value">${combo.corner}%</span>
-                    </div>
-                </div>
-                
-                <div class="combo-notes">
-                    <strong>Notes:</strong> ${combo.notes}
-                </div>
-            `;
-            
-            return card;
-        }
-
-        function playCombo(comboId, card) {
-            stopAnimation();
-            const allCombos = Object.values(characterCombos).flat();
-            const combo = allCombos.find(c => c.id === comboId);
-            if (combo) {
-                animateCombo(combo, card);
-            }
-        }
-
-        function toggleFavorite(comboId) {
-            if (favorites.has(comboId)) {
-                favorites.delete(comboId);
-            } else {
-                favorites.add(comboId);
-            }
-            renderCombos();
-        }
-
-        function togglePracticed(comboId) {
-            if (practiced.has(comboId)) {
-                practiced.delete(comboId);
-            } else {
-                practiced.add(comboId);
-            }
-            renderCombos();
-        }
-
-        function filterCombos() {
-            if (!selectedCharacter) return [];
-            
-            const difficultyFilter = document.getElementById('difficultyFilter').value;
-            const situationFilter = document.getElementById('situationFilter').value;
-            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
-            
-            const combos = characterCombos[selectedCharacter] || [];
-            
-            return combos.filter(combo => {
-                const matchesDifficulty = !difficultyFilter || combo.difficulty === difficultyFilter;
-                const matchesSituation = !situationFilter || combo.situation === situationFilter;
-                const matchesSearch = !searchTerm || 
-                    combo.name.toLowerCase().includes(searchTerm) ||
-                    combo.notation.toLowerCase().includes(searchTerm) ||
-                    combo.notes.toLowerCase().includes(searchTerm);
-                
-                return matchesDifficulty && matchesSituation && matchesSearch;
-            });
-        }
-
-        function renderCombos() {
-            stopAnimation();
-            const grid = document.getElementById('comboGrid');
-            
-            if (!selectedCharacter) {
-                grid.innerHTML = '<div class="no-character">👆 Select a character above to view their combos</div>';
-                return;
-            }
-            
-            const filteredCombos = filterCombos();
-            
-            if (filteredCombos.length === 0) {
-                grid.innerHTML = '<div class="no-results">No combos found matching your criteria.</div>';
-                return;
-            }
-            
-            grid.innerHTML = '';
-            filteredCombos.forEach(combo => {
-                grid.appendChild(createComboCard(combo));
-            });
-        }
-
-        // Event listeners
-        document.getElementById('difficultyFilter').addEventListener('change', renderCombos);
-        document.getElementById('situationFilter').addEventListener('change', renderCombos);
-        document.getElementById('searchInput').addEventListener('input', renderCombos);
-        document.getElementById('showNotation').addEventListener('change', renderCombos);
-        document.getElementById('showVisual').addEventListener('change', renderCombos);
-
-        // Initial render
-        renderCombos();
     </script>
 </body>
 </html>
+'''
+
+if __name__ == '__main__':
+    print("=" * 60)
+    print("AI Threat Log Analyzer - Network Edition")
+    print("=" * 60)
+    print("\n🚀 Starting Flask server...")
+    print("📝 Make sure Ollama is running: ollama serve")
+    print("📦 Supports: Logs, PCAP files, Wireshark exports")
+    print("🌐 Open http://localhost:5000 in your browser\n")
+    app.run(debug=True, host='0.0.0.0', port=5000)
