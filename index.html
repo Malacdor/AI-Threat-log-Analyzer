@@ -1,0 +1,1049 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GBVSR Combo Guide</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e, #16213e, #0f0f1e);
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+
+        .header {
+            background: linear-gradient(90deg, #2d1b69, #8b5a3c, #4a4a4a);
+            padding: 20px;
+            text-align: center;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+        }
+
+        .header h1 {
+            color: #d4af37;
+            font-size: 2.5rem;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.7);
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #c0c0c0;
+            font-size: 1.1rem;
+        }
+
+        .character-selector {
+            background: rgba(45, 27, 105, 0.3);
+            padding: 25px;
+            margin: 20px;
+            border-radius: 15px;
+            border: 2px solid #4a4a4a;
+        }
+
+        .character-selector h2 {
+            color: #d4af37;
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 1.5rem;
+        }
+
+        .character-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .character-card {
+            background: linear-gradient(135deg, #2a2a3e, #3a3a4e);
+            border: 2px solid #4a4a4a;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .character-card:hover {
+            border-color: #d4af37;
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(212, 175, 55, 0.2);
+        }
+
+        .character-card.selected {
+            border-color: #d4af37;
+            background: linear-gradient(135deg, #3a2a1e, #4a3a2e);
+            box-shadow: 0 0 20px rgba(212, 175, 55, 0.3);
+        }
+
+        .character-name {
+            color: #d4af37;
+            font-size: 1.2rem;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+
+        .character-desc {
+            color: #c0c0c0;
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+
+        .controls {
+            display: flex;
+            gap: 20px;
+            padding: 20px;
+            background: rgba(45, 27, 105, 0.2);
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .control-group label {
+            color: #d4af37;
+            font-weight: bold;
+            font-size: 0.9rem;
+        }
+
+        select, input {
+            padding: 8px 12px;
+            border: 2px solid #4a4a4a;
+            border-radius: 5px;
+            background: #2a2a2a;
+            color: #e0e0e0;
+            font-size: 0.9rem;
+        }
+
+        select:focus, input:focus {
+            outline: none;
+            border-color: #d4af37;
+        }
+
+        .toggle-group {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .toggle {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 24px;
+        }
+
+        .toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #4a4a4a;
+            transition: .4s;
+            border-radius: 24px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background-color: #d4af37;
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
+
+        .combo-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(600px, 1fr));
+            gap: 20px;
+            padding: 20px;
+        }
+
+        .combo-card {
+            background: linear-gradient(135deg, #2a2a3e, #3a3a4e);
+            border: 2px solid #4a4a4a;
+            border-radius: 10px;
+            padding: 20px;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .combo-card:hover {
+            border-color: #d4af37;
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(212, 175, 55, 0.2);
+        }
+
+        .combo-card.favorited {
+            border-color: #ff6b6b;
+            background: linear-gradient(135deg, #3e2a2a, #4e3a3a);
+        }
+
+        .combo-card.practiced {
+            border-color: #51cf66;
+            background: linear-gradient(135deg, #2a3e2a, #3a4e3a);
+        }
+
+        .combo-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+
+        .combo-title {
+            color: #d4af37;
+            font-size: 1.3rem;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .combo-tags {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+
+        .tag {
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: bold;
+        }
+
+        .tag.difficulty-beginner { background: #51cf66; color: #000; }
+        .tag.difficulty-intermediate { background: #ffd43b; color: #000; }
+        .tag.difficulty-advanced { background: #ff8787; color: #000; }
+        .tag.difficulty-expert { background: #9775fa; color: #fff; }
+        .tag.situation { background: #74c0fc; color: #000; }
+
+        .combo-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .action-btn {
+            background: none;
+            border: 1px solid #4a4a4a;
+            color: #e0e0e0;
+            padding: 5px 8px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: all 0.3s;
+        }
+
+        .action-btn:hover {
+            border-color: #d4af37;
+            color: #d4af37;
+        }
+
+        .action-btn.active {
+            background: #d4af37;
+            color: #000;
+            border-color: #d4af37;
+        }
+
+        .combo-sequence {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+        }
+
+        .input-display {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+
+        .input-group {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            background: rgba(74, 74, 74, 0.5);
+            padding: 5px 8px;
+            border-radius: 5px;
+            border: 1px solid #4a4a4a;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .input-group.active {
+            border-color: #d4af37;
+            background: rgba(212, 175, 55, 0.2);
+        }
+
+        .input-group.active::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(212, 175, 55, 0.3), transparent);
+            animation: highlight 0.5s ease-in-out;
+        }
+
+        @keyframes highlight {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .dpad {
+            display: inline-grid;
+            grid-template-columns: repeat(3, 12px);
+            grid-template-rows: repeat(3, 12px);
+            gap: 1px;
+            background: #2a2a2a;
+            padding: 2px;
+            border-radius: 3px;
+            border: 1px solid #4a4a4a;
+        }
+
+        .dpad-square {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            width: 12px;
+            height: 12px;
+        }
+
+        .dpad-square.active {
+            background: #74c0fc;
+            border-color: #339af0;
+            box-shadow: 0 0 4px rgba(116, 192, 252, 0.5);
+        }
+
+        .motion-sequence {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+        }
+
+        .motion-input, .button-input {
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+            font-size: 0.9rem;
+        }
+
+        .motion-input {
+            color: #74c0fc;
+        }
+
+        .button-input {
+            color: #ffd43b;
+        }
+
+        .combo-arrow {
+            color: #8b5a3c;
+            font-weight: bold;
+            font-size: 1.2rem;
+        }
+
+        .notation-display {
+            font-family: 'Courier New', monospace;
+            color: #c0c0c0;
+            font-size: 0.9rem;
+            background: rgba(0, 0, 0, 0.2);
+            padding: 10px;
+            border-radius: 5px;
+            border-left: 3px solid #d4af37;
+        }
+
+        .combo-properties {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .property {
+            background: rgba(74, 74, 74, 0.3);
+            padding: 8px 12px;
+            border-radius: 5px;
+            text-align: center;
+        }
+
+        .property-label {
+            display: block;
+            font-size: 0.8rem;
+            color: #a0a0a0;
+            margin-bottom: 2px;
+        }
+
+        .property-value {
+            font-weight: bold;
+            color: #d4af37;
+        }
+
+        .combo-notes {
+            margin-top: 15px;
+            padding: 10px;
+            background: rgba(139, 90, 60, 0.2);
+            border-radius: 5px;
+            border-left: 3px solid #8b5a3c;
+            font-size: 0.9rem;
+            color: #e0e0e0;
+        }
+
+        .no-results {
+            text-align: center;
+            color: #8a8a8a;
+            font-size: 1.2rem;
+            padding: 40px;
+            grid-column: 1 / -1;
+        }
+
+        .no-character {
+            text-align: center;
+            color: #8a8a8a;
+            font-size: 1.5rem;
+            padding: 60px 20px;
+            grid-column: 1 / -1;
+        }
+
+        .play-btn {
+            background: linear-gradient(45deg, #4ecdc4, #44a08d);
+            border: none;
+            color: white;
+            padding: 8px 15px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+
+        .play-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 5px 15px rgba(78, 205, 196, 0.3);
+        }
+
+        @media (max-width: 768px) {
+            .combo-grid {
+                grid-template-columns: 1fr;
+                padding: 10px;
+            }
+            
+            .controls {
+                flex-direction: column;
+                align-items: center;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+
+            .character-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>GBVSR Combo Guide</h1>
+        <p>Granblue Fantasy Versus Rising - Master Every Character</p>
+    </div>
+
+    <div class="character-selector">
+        <h2>Select a Character</h2>
+        <div class="character-grid">
+            <div class="character-card" onclick="selectCharacter('nier')">
+                <div class="character-name">Nier</div>
+                <div class="character-desc">Death-wielding reaper with unique recall mechanics and soul manipulation</div>
+            </div>
+            <div class="character-card" onclick="selectCharacter('vikala')">
+                <div class="character-name">Vikala</div>
+                <div class="character-desc">Versatile rushdown character with strong neutral and bravery point management</div>
+            </div>
+            <div class="character-card" onclick="selectCharacter('galleon')">
+                <div class="character-name">Galleon</div>
+                <div class="character-desc">Command grab specialist with powerful mix-ups and oki setups</div>
+            </div>
+            <div class="character-card" onclick="selectCharacter('siegfried')">
+                <div class="character-name">Siegfried</div>
+                <div class="character-desc">Heavy-hitting swordsman with dragon blood mechanics and unblockables</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="controls" style="display: none;" id="controls">
+        <div class="control-group">
+            <label for="difficultyFilter">Difficulty</label>
+            <select id="difficultyFilter">
+                <option value="">All Difficulties</option>
+                <option value="beginner">Beginner</option>
+                <option value="intermediate">Intermediate</option>
+                <option value="advanced">Advanced</option>
+                <option value="expert">Expert</option>
+            </select>
+        </div>
+        
+        <div class="control-group">
+            <label for="situationFilter">Situation</label>
+            <select id="situationFilter">
+                <option value="">All Situations</option>
+                <option value="midscreen">Midscreen</option>
+                <option value="corner">Corner</option>
+                <option value="punish">Punish</option>
+                <option value="anti-air">Anti-Air</option>
+                <option value="oki">Oki Setup</option>
+            </select>
+        </div>
+        
+        <div class="control-group">
+            <label for="searchInput">Search</label>
+            <input type="text" id="searchInput" placeholder="Search combos...">
+        </div>
+        
+        <div class="control-group">
+            <label>Display Options</label>
+            <div class="toggle-group">
+                <span>Notation</span>
+                <label class="toggle">
+                    <input type="checkbox" id="showNotation" checked>
+                    <span class="slider"></span>
+                </label>
+                <span>Visual</span>
+                <label class="toggle">
+                    <input type="checkbox" id="showVisual" checked>
+                    <span class="slider"></span>
+                </label>
+            </div>
+        </div>
+    </div>
+
+    <div class="combo-grid" id="comboGrid">
+        <div class="no-character">👆 Select a character above to view their combos</div>
+    </div>
+
+    <script>
+        const characterCombos = {
+            nier: [
+                {
+                    id: 1,
+                    character: "nier",
+                    name: "Basic BnB",
+                    difficulty: "beginner",
+                    situation: "midscreen",
+                    damage: 3200,
+                    meter: 15,
+                    corner: 65,
+                    inputs: [
+                        { motion: "5", button: "L", timing: 600 },
+                        { motion: "5", button: "M", timing: 400 },
+                        { motion: "5", button: "H", timing: 500 },
+                        { motion: "236", button: "H", timing: 600 }
+                    ],
+                    notation: "5L > 5M > 5H > 236H",
+                    notes: "Basic combo that works from most ranges. Good starter combo for learning Nier's timing."
+                },
+                {
+                    id: 2,
+                    character: "nier",
+                    name: "Volleyball Combo",
+                    difficulty: "intermediate",
+                    situation: "midscreen",
+                    damage: 4100,
+                    meter: 25,
+                    corner: 70,
+                    inputs: [
+                        { motion: "5", button: "L", timing: 500 },
+                        { motion: "5", button: "M", timing: 400 },
+                        { motion: "5", button: "H", timing: 600 },
+                        { motion: "j", button: "", timing: 300 },
+                        { motion: "j", button: "M", timing: 400 },
+                        { motion: "j", button: "H", timing: 500 },
+                        { motion: "214", button: "H", timing: 700 }
+                    ],
+                    notation: "5L > 5M > 5H > j.M > j.H > 214H",
+                    notes: "Classic volleyball combo that juggles the opponent. Named for the way it bounces them up and down like a volleyball."
+                },
+                {
+                    id: 3,
+                    character: "nier",
+                    name: "Death Recall Ender",
+                    difficulty: "intermediate",
+                    situation: "midscreen",
+                    damage: 3500,
+                    meter: 20,
+                    corner: 60,
+                    inputs: [
+                        { motion: "5", button: "L", timing: 500 },
+                        { motion: "5", button: "M", timing: 400 },
+                        { motion: "214", button: "L", timing: 700 },
+                        { motion: "236", button: "H", timing: 800 },
+                        { motion: "5", button: "U", timing: 600 }
+                    ],
+                    notation: "5L > 5M > 214L > 236H > 5U",
+                    notes: "Essential combo that ends with Death recall. The 5U ender saves 2 stocks of recall time, accelerating Death's recharge timer."
+                }
+            ],
+            vikala: [
+                {
+                    id: 4,
+                    character: "vikala",
+                    name: "Basic Triple Attack",
+                    difficulty: "beginner",
+                    situation: "midscreen",
+                    damage: 2800,
+                    meter: 10,
+                    corner: 45,
+                    inputs: [
+                        { motion: "c", button: "L", timing: 500 },
+                        { motion: "c", button: "M", timing: 400 },
+                        { motion: "c", button: "H", timing: 500 },
+                        { motion: "623", button: "H", timing: 700 }
+                    ],
+                    notation: "c.LXX > 623H",
+                    notes: "Basic triple attack combo into launcher. Good starter for learning Vikala's chain combos."
+                },
+                {
+                    id: 5,
+                    character: "vikala",
+                    name: "Bravery Point Setup",
+                    difficulty: "intermediate",
+                    situation: "midscreen",
+                    damage: 3400,
+                    meter: 20,
+                    corner: 55,
+                    inputs: [
+                        { motion: "c", button: "L", timing: 500 },
+                        { motion: "c", button: "M", timing: 400 },
+                        { motion: "623", button: "H", timing: 700 },
+                        { motion: "2", button: "U", timing: 600 }
+                    ],
+                    notation: "c.LXX > 623H > 2U",
+                    notes: "Combo that sets up bravery point advantage. The 2U ender gives frame advantage for pressure."
+                },
+                {
+                    id: 6,
+                    character: "vikala",
+                    name: "Corner Carry Chain",
+                    difficulty: "advanced",
+                    situation: "midscreen",
+                    damage: 4200,
+                    meter: 30,
+                    corner: 80,
+                    inputs: [
+                        { motion: "2", button: "M", timing: 600 },
+                        { motion: "5", button: "H", timing: 500 },
+                        { motion: "623", button: "M", timing: 700 },
+                        { motion: "236", button: "H", timing: 800 }
+                    ],
+                    notation: "2M > 5H > 623M > 236H",
+                    notes: "Strong corner carry combo. Excellent for moving the opponent to the corner for pressure."
+                }
+            ],
+            galleon: [
+                {
+                    id: 7,
+                    character: "galleon",
+                    name: "Basic Command Grab Setup",
+                    difficulty: "beginner",
+                    situation: "midscreen",
+                    damage: 3000,
+                    meter: 15,
+                    corner: 50,
+                    inputs: [
+                        { motion: "c", button: "L", timing: 500 },
+                        { motion: "c", button: "M", timing: 400 },
+                        { motion: "c", button: "H", timing: 500 },
+                        { motion: "5", button: "U", timing: 600 },
+                        { motion: "623", button: "L", timing: 700 }
+                    ],
+                    notation: "c.XXX > 5U, 623L",
+                    notes: "Basic combo that leads into plus frames for command grab mixups. Sets up Galleon's gameplan perfectly."
+                },
+                {
+                    id: 8,
+                    character: "galleon",
+                    name: "Oki Setup Special",
+                    difficulty: "intermediate",
+                    situation: "oki",
+                    damage: 3600,
+                    meter: 25,
+                    corner: 40,
+                    inputs: [
+                        { motion: "6", button: "H", timing: 700 },
+                        { motion: "214", button: "M", timing: 800 },
+                        { motion: "22", button: "L", timing: 600 }
+                    ],
+                    notation: "6H > 214M > 22L",
+                    notes: "Oki setup that creates advantageous wakeup situations. The 22L gives great frame advantage for mixups."
+                },
+                {
+                    id: 9,
+                    character: "galleon",
+                    name: "High Damage Punish",
+                    difficulty: "advanced",
+                    situation: "punish",
+                    damage: 4800,
+                    meter: 40,
+                    corner: 70,
+                    inputs: [
+                        { motion: "2", button: "H", timing: 700 },
+                        { motion: "236", button: "H", timing: 800 },
+                        { motion: "623", button: "H", timing: 900 },
+                        { motion: "22", button: "H", timing: 1000 }
+                    ],
+                    notation: "2H > 236H > 623H > 22H",
+                    notes: "High damage punish combo. Use when you have a guaranteed opening for maximum damage."
+                }
+            ],
+            siegfried: [
+                {
+                    id: 10,
+                    character: "siegfried",
+                    name: "Basic Sword Combo",
+                    difficulty: "beginner",
+                    situation: "midscreen",
+                    damage: 3400,
+                    meter: 20,
+                    corner: 60,
+                    inputs: [
+                        { motion: "5", button: "M", timing: 600 },
+                        { motion: "5", button: "H", timing: 500 },
+                        { motion: "623", button: "L", timing: 700 }
+                    ],
+                    notation: "5M > 5H > 623L",
+                    notes: "Basic sword combo with good damage. Foundation of Siegfried's neutral game combos."
+                },
+                {
+                    id: 11,
+                    character: "siegfried",
+                    name: "Anti-Air Dragon Punch",
+                    difficulty: "intermediate",
+                    situation: "anti-air",
+                    damage: 4000,
+                    meter: 25,
+                    corner: 50,
+                    inputs: [
+                        { motion: "2", button: "H", timing: 700 },
+                        { motion: "623", button: "H", timing: 800 },
+                        { motion: "214", button: "L", timing: 600 }
+                    ],
+                    notation: "2H > 623H > 214L",
+                    notes: "Strong anti-air conversion. Great for punishing jump-ins with high damage."
+                },
+                {
+                    id: 12,
+                    character: "siegfried",
+                    name: "Dragon Blood Combo",
+                    difficulty: "advanced",
+                    situation: "corner",
+                    damage: 5200,
+                    meter: 35,
+                    corner: 0,
+                    inputs: [
+                        { motion: "22", button: "L", timing: 800 },
+                        { motion: "5", button: "H", timing: 500 },
+                        { motion: "236", button: "H", timing: 700 },
+                        { motion: "22", button: "H", timing: 1000 }
+                    ],
+                    notation: "22L~L > 5H > 236H > 22H~H",
+                    notes: "Dragon blood enhanced combo with massive damage. Uses Siegfried's unique mechanic for maximum effect."
+                }
+            ]
+        };
+
+        let selectedCharacter = null;
+        let animationTimeout;
+        let favorites = new Set();
+        let practiced = new Set();
+
+        function selectCharacter(character) {
+            selectedCharacter = character;
+            
+            // Update character card selection
+            document.querySelectorAll('.character-card').forEach(card => {
+                card.classList.remove('selected');
+            });
+            event.target.closest('.character-card').classList.add('selected');
+            
+            // Show controls and render combos
+            document.getElementById('controls').style.display = 'flex';
+            renderCombos();
+        }
+
+        function createInputVisual(input) {
+            const group = document.createElement('div');
+            group.className = 'input-group';
+            
+            if (input.motion) {
+                // Create D-pad visual for directional inputs
+                if (input.motion.length === 1 && !isNaN(input.motion)) {
+                    const dpad = createDpadVisual(input.motion);
+                    group.appendChild(dpad);
+                } else if (input.motion.includes('j') || input.motion.includes('c')) {
+                    // Jump or chain notation
+                    const motion = document.createElement('span');
+                    motion.className = 'motion-input';
+                    motion.textContent = input.motion;
+                    group.appendChild(motion);
+                } else if (input.motion.length > 1) {
+                    // Multi-directional inputs like quarter circles
+                    const motionSpan = document.createElement('span');
+                    motionSpan.className = 'motion-sequence';
+                    
+                    // Break down complex motions into individual directions
+                    for (let i = 0; i < input.motion.length; i++) {
+                        const dir = input.motion[i];
+                        if (!isNaN(dir)) {
+                            const dpad = createDpadVisual(dir);
+                            dpad.style.display = 'inline-block';
+                            dpad.style.marginRight = '2px';
+                            motionSpan.appendChild(dpad);
+                        }
+                    }
+                    group.appendChild(motionSpan);
+                } else {
+                    const motion = document.createElement('span');
+                    motion.className = 'motion-input';
+                    motion.textContent = input.motion;
+                    group.appendChild(motion);
+                }
+            }
+            
+            if (input.button) {
+                const button = document.createElement('span');
+                button.className = 'button-input';
+                button.textContent = input.button;
+                group.appendChild(button);
+            }
+            
+            return group;
+        }
+
+        function createDpadVisual(direction) {
+            const dpad = document.createElement('div');
+            dpad.className = 'dpad';
+            
+            const positions = ['7', '8', '9', '4', '5', '6', '1', '2', '3'];
+            
+            positions.forEach(pos => {
+                const square = document.createElement('div');
+                square.className = `dpad-square ${pos === direction ? 'active' : ''}`;
+                dpad.appendChild(square);
+            });
+            
+            return dpad;
+        }
+
+        function animateCombo(combo, card) {
+            const inputs = card.querySelectorAll('.input-group');
+            let currentStep = 0;
+            
+            function highlightStep() {
+                inputs.forEach(input => input.classList.remove('active'));
+                
+                if (currentStep < inputs.length) {
+                    inputs[currentStep].classList.add('active');
+                    
+                    const timing = combo.inputs[currentStep]?.timing || 600;
+                    currentStep++;
+                    
+                    animationTimeout = setTimeout(highlightStep, timing);
+                } else {
+                    currentStep = 0;
+                    animationTimeout = setTimeout(highlightStep, 1500);
+                }
+            }
+            
+            highlightStep();
+        }
+
+        function stopAnimation() {
+            if (animationTimeout) {
+                clearTimeout(animationTimeout);
+                animationTimeout = null;
+            }
+            document.querySelectorAll('.input-group').forEach(input => 
+                input.classList.remove('active')
+            );
+        }
+
+        function createComboCard(combo) {
+            const card = document.createElement('div');
+            card.className = `combo-card ${favorites.has(combo.id) ? 'favorited' : ''} ${practiced.has(combo.id) ? 'practiced' : ''}`;
+            
+            const showNotation = document.getElementById('showNotation').checked;
+            const showVisual = document.getElementById('showVisual').checked;
+            
+            card.innerHTML = `
+                <div class="combo-header">
+                    <div>
+                        <h3 class="combo-title">${combo.name}</h3>
+                        <div class="combo-tags">
+                            <span class="tag difficulty-${combo.difficulty}">${combo.difficulty.toUpperCase()}</span>
+                            <span class="tag situation">${combo.situation.toUpperCase()}</span>
+                        </div>
+                    </div>
+                    <div class="combo-actions">
+                        <button class="action-btn play-btn" onclick="playCombo(${combo.id}, this.parentElement.parentElement.parentElement)">
+                            ▶ Play
+                        </button>
+                        <button class="action-btn ${favorites.has(combo.id) ? 'active' : ''}" onclick="toggleFavorite(${combo.id})">
+                            ♥ Fav
+                        </button>
+                        <button class="action-btn ${practiced.has(combo.id) ? 'active' : ''}" onclick="togglePracticed(${combo.id})">
+                            ✓ Done
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="combo-sequence">
+                    ${showVisual ? `
+                    <div class="input-display">
+                        ${combo.inputs.map((input, index) => 
+                            createInputVisual(input).outerHTML + 
+                            (index < combo.inputs.length - 1 ? '<span class="combo-arrow">></span>' : '')
+                        ).join('')}
+                    </div>
+                    ` : ''}
+                    
+                    ${showNotation ? `
+                    <div class="notation-display">
+                        ${combo.notation}
+                    </div>
+                    ` : ''}
+                </div>
+                
+                <div class="combo-properties">
+                    <div class="property">
+                        <span class="property-label">Damage</span>
+                        <span class="property-value">${combo.damage}</span>
+                    </div>
+                    <div class="property">
+                        <span class="property-label">Meter</span>
+                        <span class="property-value">${combo.meter}%</span>
+                    </div>
+                    <div class="property">
+                        <span class="property-label">Corner</span>
+                        <span class="property-value">${combo.corner}%</span>
+                    </div>
+                </div>
+                
+                <div class="combo-notes">
+                    <strong>Notes:</strong> ${combo.notes}
+                </div>
+            `;
+            
+            return card;
+        }
+
+        function playCombo(comboId, card) {
+            stopAnimation();
+            const allCombos = Object.values(characterCombos).flat();
+            const combo = allCombos.find(c => c.id === comboId);
+            if (combo) {
+                animateCombo(combo, card);
+            }
+        }
+
+        function toggleFavorite(comboId) {
+            if (favorites.has(comboId)) {
+                favorites.delete(comboId);
+            } else {
+                favorites.add(comboId);
+            }
+            renderCombos();
+        }
+
+        function togglePracticed(comboId) {
+            if (practiced.has(comboId)) {
+                practiced.delete(comboId);
+            } else {
+                practiced.add(comboId);
+            }
+            renderCombos();
+        }
+
+        function filterCombos() {
+            if (!selectedCharacter) return [];
+            
+            const difficultyFilter = document.getElementById('difficultyFilter').value;
+            const situationFilter = document.getElementById('situationFilter').value;
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            
+            const combos = characterCombos[selectedCharacter] || [];
+            
+            return combos.filter(combo => {
+                const matchesDifficulty = !difficultyFilter || combo.difficulty === difficultyFilter;
+                const matchesSituation = !situationFilter || combo.situation === situationFilter;
+                const matchesSearch = !searchTerm || 
+                    combo.name.toLowerCase().includes(searchTerm) ||
+                    combo.notation.toLowerCase().includes(searchTerm) ||
+                    combo.notes.toLowerCase().includes(searchTerm);
+                
+                return matchesDifficulty && matchesSituation && matchesSearch;
+            });
+        }
+
+        function renderCombos() {
+            stopAnimation();
+            const grid = document.getElementById('comboGrid');
+            
+            if (!selectedCharacter) {
+                grid.innerHTML = '<div class="no-character">👆 Select a character above to view their combos</div>';
+                return;
+            }
+            
+            const filteredCombos = filterCombos();
+            
+            if (filteredCombos.length === 0) {
+                grid.innerHTML = '<div class="no-results">No combos found matching your criteria.</div>';
+                return;
+            }
+            
+            grid.innerHTML = '';
+            filteredCombos.forEach(combo => {
+                grid.appendChild(createComboCard(combo));
+            });
+        }
+
+        // Event listeners
+        document.getElementById('difficultyFilter').addEventListener('change', renderCombos);
+        document.getElementById('situationFilter').addEventListener('change', renderCombos);
+        document.getElementById('searchInput').addEventListener('input', renderCombos);
+        document.getElementById('showNotation').addEventListener('change', renderCombos);
+        document.getElementById('showVisual').addEventListener('change', renderCombos);
+
+        // Initial render
+        renderCombos();
+    </script>
+</body>
+</html>
