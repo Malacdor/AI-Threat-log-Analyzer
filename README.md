@@ -1,116 +1,241 @@
-This part of the read me is the humans (diegos) thoughts.
+This is A Python-based web application that uses Machine Learning and AI to analyze system logs and network traffic captures for suspicious activity and security threats.
 
-This app was created with the idea of making a combo list and trainer for granblue fantasy versus rising as it does not currently have one. 
-The goal was to make a combo trainer as close to the ones implemented in other games with a little more ui friendlyness for the user, namely the option to display inputs to thier liking and the ability to train them in the same menu, which this app does.
+## How It Works
+The AI Threat Log Analyzer combines traditional machine learning with modern AI to automatically detect and explain anomalies in log files and network traffic:
 
-This app focuses on a few characters im aware of just so i can check the quality of the app itself via playing the game. However during a full release all characters would be ideal, including letting users sumbit thier own combos as desired, since combos themselves arent really known till a user submit them.
+### 1 File Uploading and Auto-Detection
+Upload any supported file through the web interface. The app automatically detects the file format:
+- System logs (syslog, ISO8601 timestamps)
+- Web server logs (Apache, Nginx)
+- JSON-formatted application logs
+- Network packet captures (PCAP, PCAPNG)
+- Wireshark text exports
 
-The overall design is to remain simply so that it wouldnt be annoying to have along the game but also complex enough to make sure it does what its set out too. With more pages I think you could make this even more user friendly and have more features.
+### 2. Log Parsing
+The parser extracts structured information from your files:
+- **For logs**: timestamps, hostnames, services, messages, error codes
+- **For network traffic**: source/destination IPs, protocols, ports, packet sizes, timing
 
+### 3. Machine Learning Anomaly Detection
+Uses scikit-learn's Isolation Forest algorithm to identify unusual patterns:
+- **For logs**: Analyzes message length, special character density, error keywords, suspicious terms
+- **For network traffic**: Examines packet sizes, protocol distribution, port activity, timing patterns
+- Flags the top 10% most anomalous entries (configurable)
 
-This section of the read me is done by claude in order to see its thought process.
+### 4. AI-Powered Explanations
+Detected anomalies are sent to Ollama (local LLM) which generates:
+- Natural language summary of findings
+- Threat severity assessment (high/medium/low)
+- Specific security concerns (port scans, unauthorized access, etc.)
+- Recommended actions for investigation
 
-# GBVSR Combo Guide - Design Documentation
+### 5. Visual Results
+The web interface displays:
+- Statistics dashboard (total entries, anomalies found, format detected)
+- AI-generated security summary
+- Detailed list of suspicious entries with severity badges
+- Full log viewer with highlighted anomalous lines in red
 
-## Overview
-A comprehensive web application for learning and practicing combos in Granblue Fantasy Versus Rising (GBVSR). Built as a single-page HTML application with embedded CSS and JavaScript for maximum portability and ease of use.
+---
 
-## Core Design Philosophy
+## System Requirements
 
-### **Single-Page Architecture**
-- **Decision**: Built as one HTML file with embedded assets
-- **Reasoning**: Easy deployment, no build process, works offline, simple hosting
-- **Benefit**: Users can save locally and access anywhere without dependencies
+### Operating System
+- **Windows** 10/11
+- **macOS** unsure
+- **Linux** (any modern distribution)
 
-### **Character-Centric Design**
-- **Decision**: Multi-character support with character selection as primary navigation
-- **Reasoning**: GBVSR players typically focus on one main character but want to explore others
-- **Implementation**: Character cards with descriptions help users understand archetypes before diving into combos
+### Software Requirements
 
-## Visual Design Choices
+#### 1. Python
+- **Version**: Python 3.8 or later
+- **Download**: https://www.python.org/downloads/
 
-### **Color Scheme**
-- **Primary**: Deep purples and golds inspired by Nier's aesthetic
-- **Reasoning**: Creates cohesive visual identity while remaining readable
-- **Accessibility**: High contrast ratios maintained throughout
+#### 2. Ollama (Local AI Model)
+- **Purpose**: Generates natural language summaries of security findings
+- **Installation**: 
+  - Download from: https://ollama.com/download
+- **Required Model**: llama3.2 (or compatible LLM)
 
-### **D-Pad Visual Inputs**
-- **Decision**: Custom 3x3 grid D-pad visuals alongside traditional notation
-- **Reasoning**: Matches Dustloop's authentic fighting game documentation style
-- **Benefit**: Visual learners can see directional inputs clearly, beginners understand motion inputs better
+#### 3. Python Virtual Environment
+- Built into Python 3.3+
 
-### **Dual Display System**
-- **Decision**: Toggle between visual inputs and text notation
-- **Reasoning**: Accommodates both visual learners and players who prefer traditional FGC notation
-- **Flexibility**: Users can show both simultaneously or choose their preferred format
+### Hardware Requirements
 
-## Interaction Design
+#### Minimum (for olama):
+- **CPU**: Dual-core processor (2 GHz+)
+- **RAM**: 4GB
+- **Storage**: 5GB free space (for Ollama and dependencies)
+- **Network**: Internet connection for initial setup only
 
-### **Play Animation System**
-- **Decision**: Realistic timing-based animations that highlight inputs sequentially
-- **Reasoning**: Helps users understand combo rhythm and timing
-- **Implementation**: Each input has individual timing values for authentic feel
+#### Recommended:
+- **CPU**: Quad-core processor (3 GHz+)
+- **RAM**: 8GB or more
+- **Storage**: 10GB free space
+- For analyzing large PCAP files (100MB+), more RAM improves performance
 
-### **Favorites & Practice Tracking**
-- **Decision**: Session-based storage (no localStorage)
-- **Reasoning**: Browser compatibility and privacy - no persistent data collection
-- **UX**: Visual feedback with colored borders for favorited/practiced combos
+### Python Package Dependencies
 
-### **Progressive Disclosure**
-- **Decision**: Hide controls until character is selected
-- **Reasoning**: Reduces visual clutter and guides user flow
-- **Benefit**: Clear hierarchy - character selection first, then combo filtering
+These are installed automatically via `requirements.txt`:
 
-## Technical Decisions
+1. **Flask** (3.0.0)
+   - Web framework for the user interface
+   
+2. **pandas** (2.1.3)
+   - Data manipulation and analysis
+   
+3. **numpy** (1.26.2)
+   - Numerical computing for ML algorithms
+   
+4. **scikit-learn** (1.3.2)
+   - Machine learning library (Isolation Forest)
+   
+5. **requests** (2.31.0)
+   - HTTP library for Ollama API communication
+   
+6. **Werkzeug** (3.0.1)
+   - WSGI utilities for Flask
+   
+7. **scapy** (2.5.0)
+   - Network packet parsing for PCAP files
 
-### **No External Dependencies**
-- **Decision**: Pure HTML/CSS/JavaScript with no frameworks
-- **Reasoning**: Maximum compatibility, fast loading, no version conflicts
-- **Tradeoff**: More verbose code but better reliability
+### Network Requirements
 
-### **Responsive Grid System**
-- **Decision**: CSS Grid for combo cards with auto-fill columns
-- **Reasoning**: Adapts to any screen size without media query complexity
-- **Mobile**: Single column on mobile, multi-column on desktop
+- **Port 5000**: Used by Flask web server (local only)
+- **Port 11434**: Used by Ollama (local only)
+- **Firewall**: No inbound connections required (all local)
 
-### **Embedded Combat Data**
-- **Decision**: Hard-coded combo data rather than external API
-- **Reasoning**: Ensures app works offline, no server dependencies
-- **Source**: Based on authentic Dustloop frame data and notation
+---
 
-## Removed Features
+## Installation & Setup
 
-### **Advanced Statistics Tracking**
-- **Removed**: Complex practice statistics and success rates
-- **Reason**: Session-only data made detailed tracking less valuable
-- **Simplified**: Basic favorites/practiced flags provide sufficient user feedback
+### Step 1: Install Python
+1. Download Python from https://www.python.org/downloads/
+2. During installation, **check "Add Python to PATH"**
+3. Verify: `python --version`
 
-### **User Accounts/Persistence**
-- **Removed**: User login and cloud save functionality
-- **Reason**: Keeps app simple and privacy-focused
-- **Alternative**: Users can bookmark combos by favoriting during sessions
+### Step 2: Install Ollama
+1. Download from https://ollama.com/download
+2. Run the installer for your operating system
+3. After installation, open terminal/command prompt
+4. Download the AI model:
+   ```bash
+   ollama pull llama3.2
+   ```
+5. Verify installation:
+   ```bash
+   ollama list
+   ```
+   You should see `llama3.2` in the list
 
-### **Real-time Data**
-- **Removed**: Live updates from fighting game databases
-- **Reason**: Combo data is relatively static, offline functionality prioritized
-- **Benefit**: Faster loading, no network dependencies
+### Step 3: Set Up the Application
+1. **Create project folder** and navigate to it:
+   ```bash
+   mkdir ai-threat-log-analyzer
+   cd ai-threat-log-analyzer
+   ```
 
-## Content Strategy
+2. **Create the required files**:
+   - `app.py` (main application code)
+   - `requirements.txt` (Python dependencies)
+   - `.gitignore` (Git ignore rules)
+   - `README.md` (this file)
 
-### **Character Selection**
-- **Curated**: 4 diverse characters representing different archetypes
-- **Coverage**: Rushdown (Vikala), Grappler (Galleon), Unique (Nier), Heavy (Siegfried)
-- **Expandable**: Data structure supports easy addition of new characters
+3. **Create virtual environment**:
+   
+   **Windows:**
+   ```bash
+   python -m venv venv
+   venv\Scripts\activate
+   ```
+   
+   **Mac/Linux:**
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+   
+   You should see `(venv)` at the start of your command line
 
-### **Combo Difficulty Progression**
-- **Beginner**: Basic BnB combos for learning fundamentals
-- **Intermediate**: Practical combos with character-specific mechanics
-- **Advanced/Expert**: High-damage and specialized situational combos
+4. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+   This takes 2-5 minutes depending on your internet speed
 
-### **Authentic Notation**
-- **Standard**: Uses established FGC notation (236, 214, j., c., etc.)
-- **Consistency**: Maintains Dustloop standards for familiar feel
-- **Accessibility**: Combines with visual D-pad for broader understanding
+### Step 4: Run the Application
+1. **Make sure you're in the project folder with venv activated**
+   ```bash
+   cd path/to/ai-threat-log-analyzer
+   venv\Scripts\activate  # Windows
+   # or
+   source venv/bin/activate  # Mac/Linux
+   ```
 
-## Future Considerations
-The modular data structure and clean separation of concerns allow for easy expansion of characters, combos, and features while maintaining the core simplicity that makes the app effective for learning and practice.
+2. **Start the app**:
+   ```bash
+   python app.py
+   ```
+
+3. **Open your browser**:
+   - Go to: http://localhost:5000
+
+4. **Upload a file and click "Analyze"**
+
+---
+
+## Supported File Types
+
+### Text-Based Logs
+- `.log` - Generic log files
+- `.txt` - Plain text logs
+- `.json` - JSON-formatted logs
+
+### Network Traffic
+- `.pcap` - Standard packet capture files
+- `.pcapng` - Next-generation packet capture format
+- `.cap` - Alternative packet capture extension
+- Wireshark text exports (any extension)
+
+### Maximum File Size
+- Default: 100MB
+- Can be adjusted in `app.py` if needed
+
+---
+
+## Troubleshooting
+
+### "Module not found" errors
+**Solution**: Make sure virtual environment is activated:
+```bash
+venv\Scripts\activate  # Windows
+source venv/bin/activate  # Mac/Linux
+```
+
+### Ollama connection errors
+**Solution**: Ensure Ollama is running:
+```bash
+ollama list  # Should show llama3.2
+```
+
+### PCAP parsing errors
+**Solution**: Install scapy properly:
+```bash
+pip install scapy
+```
+
+### Large files causing timeouts
+**Solution**: Break large files into smaller chunks or increase timeout in `app.py`
+
+### Port 5000 already in use
+**Solution**: Change port in `app.py`:
+```python
+app.run(debug=True, host='0.0.0.0', port=5001)
+```
+
+## Privacy & Security
+- **All processing is local** - no data sent to external servers
+- **Ollama runs on your machine** - AI analysis stays private
+- **No internet required** (after initial setup)
+- **Temporary files** are deleted after analysis
+- **No logging** of uploaded file contents
